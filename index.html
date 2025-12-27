@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>多地址持仓聚合查询器</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
+        }
+        .fade-in {
+            animation: fadeIn 0.5s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        /* 轧差行的高亮样式 */
+        .net-row {
+            background-color: #f8fafc;
+            border-top: 2px dashed #e2e8f0;
+            font-weight: 600;
+        }
+        /* 详情行过渡动画 */
+        .detail-row {
+            transition: all 0.3s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 font-sans min-h-screen p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        
+        <!-- Header -->
+        <header class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="p-3 bg-blue-100 text-blue-600 rounded-lg">
+                    <i data-lucide="layers" class="w-6 h-6"></i>
+                </div>
+                <div>
+                    <h1 class="text-xl font-bold text-gray-900">多地址持仓聚合查询</h1>
+                    <p class="text-sm text-gray-500">输入钱包地址(可带备注)，自动汇总持仓数量并进行对冲分析 (忽略数量 < 5)</p>
+                </div>
+            </div>
+            <div class="text-right text-sm text-gray-500">
+                <span id="status-text">就绪</span>
+            </div>
+        </header>
+
+        <!-- Input Section -->
+        <section class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+            <div class="flex justify-between items-center mb-2">
+                <label class="block text-sm font-medium text-gray-700">
+                    钱包地址列表 (每行一个地址，支持备注)
+                </label>
+                <button onclick="loadDefaultAddresses()" class="text-xs text-blue-600 hover:text-blue-800 hover:underline flex items-center gap-1">
+                    <i data-lucide="upload" class="w-3 h-3"></i> 加载默认/测试地址
+                </button>
+            </div>
+            <textarea id="addressInput" rows="8" 
+                class="w-full p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono text-sm transition-all"
+                placeholder="格式示例：&#10;0x123...abc (我的钱包1)&#10;0x456...def (备用账户)&#10;..."></textarea>
+            
+            <div class="mt-4 flex flex-wrap items-center justify-between gap-4">
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" id="useProxy" class="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500">
+                    <label for="useProxy" class="text-sm text-gray-600 cursor-pointer select-none" title="如果遇到跨域(CORS)错误，请勾选此项">
+                        使用 CORS 代理 (如果请求失败请勾选)
+                    </label>
+                </div>
+                <div class="flex gap-3">
+                    <button onclick="clearInput()" class="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+                        清空
+                    </button>
+                    <button onclick="startQuery()" id="queryBtn" class="flex items-center gap-2 px-6 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-md transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i data-lucide="search" class="w-4 h-4"></i>
+                        开始查询
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Loading State -->
+        <div id="loading" class="hidden flex flex-col items-center justify-center py-12">
+            <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+            <p class="mt-4 text-gray-500 text-sm">正在获取数据，请稍候... (<span id="progress-count">0/0</span>)</p>
+        </div>
+
+        <!-- Error Message -->
+        <div id="error-msg" class="hidden p-4 bg-red-50 text-red-700 border border-red-200 rounded-lg text-sm"></div>
+
+        <!-- Results Section -->
+        <section id="results" class="hidden space-y-4 fade-in">
+            <div class="flex justify-between items-end">
+                <div>
+                    <h2 class="text-lg font-bold text-gray-800">聚合结果</h2>
+                    <p class="text-sm text-gray-500">共找到 <span id="total-groups" class="font-bold text-blue-600">0</span> 个符合条件的持仓 (已隐藏数量 < 5)</p>
+                </div>
+                <button onclick="exportCSV()" class="flex items-center gap-2 px-4 py-2 text-sm text-green-700 bg-green-50 border border-green-200 hover:bg-green-100 rounded-lg transition-colors">
+                    <i data-lucide="download" class="w-4 h-4"></i>
+                    导出 CSV
+                </button>
+            </div>
+
+            <div class="overflow-x-auto bg-white rounded-xl shadow-sm border border-gray-200">
+                <table class="w-full text-left border-collapse table-fixed">
+                    <thead>
+                        <tr class="bg-gray-50 text-gray-600 text-xs uppercase tracking-wider border-b border-gray-200">
+                            <th class="p-4 font-semibold w-8"></th> <!-- 展开图标 -->
+                            <th class="p-4 font-semibold w-1/3">预测标题 (Mutil Title)</th>
+                            <th class="p-4 font-semibold w-1/3">相关事件 (Topic)</th>
+                            <th class="p-4 font-semibold text-center w-24">结果</th>
+                            <th class="p-4 font-semibold text-right w-32">总数量</th>
+                        </tr>
+                    </thead>
+                    <tbody id="resultBody" class="text-sm divide-y divide-gray-100">
+                        <!-- JS 注入行 -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </div>
+
+    <script>
+        // 初始化图标
+        lucide.createIcons();
+
+        // 默认地址常量 (带备注)
+        const DEFAULT_ADDRESSES = `0x71bbe4372bce22fbe590812f1e0fbcd740fa87b9(bn)
+0x6f743423b03ab58b15aea9adb2c839e19e7809ad(gg)
+0x96525bd07982fe36c79c1d62a0a3552bd49c1c2d(ok1)
+0xfc303904f04e4c394a49427fbbb91a3c0d0c0ad3(bn1)
+0xb47a66c169d1f2a3140ee1d2bf42263814220ab4(bn2)
+0x2612203ca224aa104712d437df6149a54848550d(bn3)
+0x7c21a247b35d5002bf3c3d936ed1098ab4fad7a3(bn4)
+0x856190554b078b28eff70ded0ac98b0e325d377d(ok2)
+0xff10178771a773700a9efbe00998d2139e307058(ok3)`;
+
+        // 状态变量
+        let aggregatedDataForExport = []; // 专门用于导出的数据
+        let isProcessing = false;
+
+        // 加载默认地址
+        function loadDefaultAddresses() {
+            document.getElementById('addressInput').value = DEFAULT_ADDRESSES;
+        }
+
+        // 清空输入
+        function clearInput() {
+            document.getElementById('addressInput').value = '';
+            resetUI();
+        }
+
+        // 重置 UI
+        function resetUI() {
+            document.getElementById('results').classList.add('hidden');
+            document.getElementById('error-msg').classList.add('hidden');
+            document.getElementById('resultBody').innerHTML = '';
+            aggregatedDataForExport = [];
+        }
+
+        // 显示错误
+        function showError(msg) {
+            const el = document.getElementById('error-msg');
+            el.textContent = msg;
+            el.classList.remove('hidden');
+        }
+
+        // 辅助函数：解析输入行，返回 {address, remark}
+        function parseLine(line) {
+            // 匹配 0x 开头的 42 位地址
+            const match = line.match(/(0x[a-fA-F0-9]{40})/);
+            if (match) {
+                const address = match[1];
+                // 剩余部分作为备注，去除地址、空格和外层括号
+                let remark = line.replace(address, '').trim();
+                remark = remark.replace(/^[\(\（]+|[\)\）]+$/g, '').trim();
+                return { address, remark };
+            }
+            return null;
+        }
+
+        // 辅助函数：格式化地址显示 (备注 + 缩略地址)
+        function formatAddressDisplay(address, remark) {
+            const shortAddr = `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+            if (remark) {
+                return `<span class="font-bold text-gray-800">${remark}</span> <span class="text-gray-400 text-xs ml-1 font-mono">(${shortAddr})</span>`;
+            }
+            return `<span class="text-gray-500 font-mono">${shortAddr}</span>`;
+        }
+        
+        // 辅助函数：格式化地址导出 (用于CSV)
+        function formatAddressExport(address, remark) {
+            if (remark) {
+                return `${remark}(${address})`;
+            }
+            return address;
+        }
+
+        // 核心处理函数
+        async function startQuery() {
+            if (isProcessing) return;
+
+            let input = document.getElementById('addressInput').value;
+            
+            // 如果输入为空，自动使用默认地址
+            if (!input.trim()) {
+                input = DEFAULT_ADDRESSES;
+                console.log("Input empty, using default addresses.");
+            }
+
+            // 解析每一行
+            const lines = input.split('\n');
+            const targetList = [];
+
+            lines.forEach(line => {
+                const parsed = parseLine(line);
+                if (parsed) {
+                    targetList.push(parsed);
+                }
+            });
+
+            if (targetList.length === 0) {
+                showError("请输入至少一个有效的钱包地址 (格式: 0x... 或 0x...(备注))。");
+                return;
+            }
+
+            // UI 状态更新
+            isProcessing = true;
+            resetUI();
+            const btn = document.getElementById('queryBtn');
+            btn.disabled = true;
+            btn.innerHTML = `<span class="animate-spin mr-2">⟳</span> 查询中...`;
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('progress-count').innerText = `0/${targetList.length}`;
+
+            const useProxy = document.getElementById('useProxy').checked;
+            
+            // 聚合器 Map: Key = TokenID, Value = Object
+            const aggregator = new Map();
+            let successCount = 0;
+            let failCount = 0;
+
+            // 并发处理请求
+            const promises = targetList.map(async (target) => {
+                const { address, remark } = target;
+                try {
+                    let url = `https://webfeng.org/op/getOrder?limit=100&chainId=56&page=1&walletAddress=${address}`;
+                    
+                    if (useProxy) {
+                        url = `https://corsproxy.io/?` + encodeURIComponent(url);
+                    }
+
+                    const response = await fetch(url);
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    
+                    const json = await response.json();
+
+                    if (json && json.result && json.result.list) {
+                        json.result.list.forEach(item => {
+                            const tokenId = item.tokenId;
+                            const amount = parseFloat(item.tokenAmount) || 0;
+                            
+                            // 构造明细项
+                            const detailItem = { address: address, remark: remark, amount: amount };
+
+                            if (aggregator.has(tokenId)) {
+                                const existing = aggregator.get(tokenId);
+                                existing.totalAmount += amount;
+                                existing.details.push(detailItem);
+                            } else {
+                                aggregator.set(tokenId, {
+                                    tokenId: tokenId,
+                                    mutilTitle: item.mutilTitle,
+                                    topicTitle: item.topicTitle,
+                                    outcome: item.outcome, 
+                                    outcomeLabel: item.outcome,
+                                    totalAmount: amount,
+                                    details: [detailItem] 
+                                });
+                            }
+                        });
+                    }
+                    successCount++;
+                } catch (error) {
+                    console.error(`Error fetching ${address}:`, error);
+                    failCount++;
+                } finally {
+                    // 更新进度
+                    const finished = successCount + failCount;
+                    document.getElementById('progress-count').innerText = `${finished}/${targetList.length}`;
+                }
+            });
+
+            await Promise.all(promises);
+
+            // 渲染结果
+            renderResults(aggregator);
+            
+            // 恢复 UI 状态
+            isProcessing = false;
+            btn.disabled = false;
+            btn.innerHTML = `<i data-lucide="search" class="w-4 h-4 mr-2"></i> 开始查询`;
+            lucide.createIcons(); // 重新渲染图标
+            document.getElementById('loading').classList.add('hidden');
+            
+            if (failCount > 0) {
+                showError(`查询完成，但有 ${failCount} 个地址请求失败。请检查地址是否正确或尝试勾选 CORS 代理。`);
+            }
+        }
+
+        function renderResults(aggregator) {
+            const tbody = document.getElementById('resultBody');
+            const resultSection = document.getElementById('results');
+            const totalGroupsEl = document.getElementById('total-groups');
+
+            if (aggregator.size === 0) {
+                showError("未找到任何数据，或接口返回为空。");
+                return;
+            }
+
+            // 1. 初始过滤：只保留数量 >= 5 的条目
+            const filteredData = Array.from(aggregator.values()).filter(item => item.totalAmount >= 5);
+
+            if (filteredData.length === 0) {
+                showError("所有持仓数量均小于 5，无数据展示。");
+                return;
+            }
+
+            // 保存过滤后的数据供导出
+            aggregatedDataForExport = filteredData;
+            totalGroupsEl.innerText = filteredData.length;
+
+            // 2. 分组逻辑
+            const groups = {};
+            filteredData.forEach(item => {
+                const groupKey = (item.mutilTitle || "Unknown") + "|||" + (item.topicTitle || "Unknown");
+                if (!groups[groupKey]) {
+                    groups[groupKey] = [];
+                }
+                groups[groupKey].push(item);
+            });
+
+            // 3. 排序
+            const sortedGroupKeys = Object.keys(groups).sort();
+
+            // 4. 构建渲染
+            sortedGroupKeys.forEach(key => {
+                const groupItems = groups[key];
+                
+                // 组内排序
+                groupItems.sort((a, b) => b.totalAmount - a.totalAmount);
+
+                let yesAmount = 0;
+                let noAmount = 0;
+                let hasYes = false;
+                let hasNo = false;
+
+                // 渲染原始行
+                groupItems.forEach(item => {
+                    if (item.outcomeLabel === 'YES') { yesAmount += item.totalAmount; hasYes = true; }
+                    if (item.outcomeLabel === 'NO') { noAmount += item.totalAmount; hasNo = true; }
+                    
+                    renderRow(tbody, item, false);
+                });
+
+                // 5. 轧差行
+                if (hasYes && hasNo) {
+                    const net = yesAmount - noAmount;
+                    const netSide = net > 0 ? 'YES' : (net < 0 ? 'NO' : 'FLAT');
+                    const netAbs = Math.abs(net);
+
+                    const analysisItem = {
+                        mutilTitle: "", 
+                        topicTitle: "📊 净头寸分析 (Net Position)",
+                        outcomeLabel: netSide,
+                        totalAmount: netAbs,
+                        isNetRow: true
+                    };
+                    renderRow(tbody, analysisItem, true);
+                }
+            });
+
+            resultSection.classList.remove('hidden');
+            lucide.createIcons();
+        }
+
+        // 切换详情行显示
+        function toggleDetails(tokenId) {
+            const row = document.getElementById(`detail-${tokenId}`);
+            const icon = document.getElementById(`icon-${tokenId}`);
+            if (row.classList.contains('hidden')) {
+                row.classList.remove('hidden');
+                icon.style.transform = 'rotate(90deg)';
+            } else {
+                row.classList.add('hidden');
+                icon.style.transform = 'rotate(0deg)';
+            }
+        }
+
+        // 渲染单行
+        function renderRow(tbody, item, isNetRow) {
+            const tr = document.createElement('tr');
+            
+            // 样式处理
+            let outcomeClass = "bg-gray-100 text-gray-600";
+            if (item.outcomeLabel === 'YES') outcomeClass = "bg-green-100 text-green-700 border-green-200";
+            if (item.outcomeLabel === 'NO') outcomeClass = "bg-red-100 text-red-700 border-red-200";
+            if (item.outcomeLabel === 'FLAT') outcomeClass = "bg-gray-200 text-gray-700 border-gray-300";
+
+            if (isNetRow) {
+                tr.className = "net-row text-gray-700";
+                if (item.outcomeLabel === 'YES') outcomeClass = "bg-green-600 text-white border-green-600 shadow-sm";
+                if (item.outcomeLabel === 'NO') outcomeClass = "bg-red-600 text-white border-red-600 shadow-sm";
+            } else {
+                tr.className = "hover:bg-gray-50 transition-colors border-b border-gray-50 cursor-pointer";
+                tr.onclick = () => toggleDetails(item.tokenId); // 点击整行展开
+            }
+
+            const amountClass = isNetRow ? "font-bold text-gray-900 text-base" : "font-mono font-bold text-blue-700";
+
+            // 主行 HTML
+            tr.innerHTML = `
+                <td class="p-4 align-top text-center text-gray-400">
+                    ${!isNetRow ? `<i id="icon-${item.tokenId}" data-lucide="chevron-right" class="w-4 h-4 transition-transform duration-200"></i>` : ''}
+                </td>
+                <td class="p-4 align-top">
+                    <div class="font-medium ${isNetRow ? 'text-gray-400' : 'text-gray-900'} line-clamp-2" title="${item.mutilTitle}">
+                        ${item.mutilTitle || ''}
+                    </div>
+                </td>
+                <td class="p-4 align-top ${isNetRow ? 'font-semibold text-gray-800 italic' : 'text-gray-600'} whitespace-nowrap">
+                    ${item.topicTitle}
+                </td>
+                <td class="p-4 align-top text-center">
+                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${outcomeClass}">
+                        ${isNetRow ? '净 ' + item.outcomeLabel : item.outcomeLabel}
+                    </span>
+                </td>
+                <td class="p-4 align-top text-right ${amountClass}">
+                    ${item.totalAmount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 6})}
+                </td>
+            `;
+            tbody.appendChild(tr);
+
+            // 详情行 HTML (仅非 Net Row 有)
+            if (!isNetRow) {
+                const detailTr = document.createElement('tr');
+                detailTr.id = `detail-${item.tokenId}`;
+                detailTr.className = "hidden bg-gray-50 detail-row border-b border-gray-200";
+                
+                // 根据数量排序明细
+                const sortedDetails = item.details.sort((a, b) => b.amount - a.amount);
+                
+                let detailRows = sortedDetails.map(d => `
+                    <div class="flex justify-between items-center py-2 px-4 border-b border-gray-100 last:border-0 hover:bg-white rounded text-xs">
+                        <span class="truncate max-w-[200px] md:max-w-[400px]">
+                            ${formatAddressDisplay(d.address, d.remark)}
+                        </span>
+                        <span class="font-mono font-medium text-gray-700 ml-4 whitespace-nowrap">${d.amount.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+                    </div>
+                `).join('');
+
+                detailTr.innerHTML = `
+                    <td colspan="5" class="p-4">
+                        <div class="ml-8 bg-white border border-gray-200 rounded-lg shadow-sm p-2">
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4 mt-1">
+                                地址持仓明细 (共 ${item.details.length} 个地址)
+                            </h4>
+                            <div class="max-h-64 overflow-y-auto custom-scrollbar">
+                                ${detailRows}
+                            </div>
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(detailTr);
+            }
+        }
+
+        // 导出 CSV 功能
+        function exportCSV() {
+            if (!aggregatedDataForExport || aggregatedDataForExport.length === 0) return;
+
+            const headers = ["MutilTitle", "TopicTitle", "Outcome", "TotalAmount", "Details"];
+            const rows = aggregatedDataForExport.map(item => {
+                // 将明细格式化为字符串: "备注(地址): 数量 | ..."
+                const detailsStr = item.details
+                    .map(d => `${formatAddressExport(d.address, d.remark)}: ${d.amount}`)
+                    .join(" | ");
+                
+                return [
+                    `"${(item.mutilTitle || '').replace(/"/g, '""')}"`,
+                    `"${(item.topicTitle || '').replace(/"/g, '""')}"`,
+                    `"${item.outcomeLabel}"`,
+                    item.totalAmount,
+                    `"${detailsStr}"`
+                ];
+            });
+
+            const csvContent = [
+                headers.join(","),
+                ...rows.map(e => e.join(","))
+            ].join("\n");
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            
+            link.setAttribute("href", url);
+            link.setAttribute("download", `prediction_net_analysis_${new Date().toISOString().slice(0,10)}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
