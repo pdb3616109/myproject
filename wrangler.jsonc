@@ -1,0 +1,11 @@
+{
+  "name": "your-project-name",
+  "compatibility_date": "2026-01-09",
+  "assets": {
+    "directory": "./"  // 如果你的HTML文件在根目录
+    // 或指定特定目录，比如：
+    // "directory": "./dist"
+    // "directory": "./public"
+    // "directory": "./build"
+  }
+}
